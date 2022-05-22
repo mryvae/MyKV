@@ -76,7 +76,14 @@ char *zstrdup(const char *s) {
     memcpy(p,s,l);
     return p;
 }
+char *zstrdupcat(const char *s,char *t) {
+    size_t l = strlen(s)+strlen(t)+1;
+    char *p = zmalloc(l);
 
+    memcpy(p,s,strlen(s));
+    memcpy(p+strlen(s),t,strlen(t)+1);
+    return p;
+}
 size_t zmalloc_used_memory(void) {
     return used_memory;
 }

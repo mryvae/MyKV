@@ -6,7 +6,7 @@
 #define CARRAY_FULL 2
 #define CARRAY_EMPTY 3
 #define CARRAY_MIN_SIZE 1024
-#define CARRAY_MAX_SIZE 1024*16
+#define CARRAY_MAX_SIZE 1024*256
 typedef struct carray {
     void ** array;
     unsigned int size;

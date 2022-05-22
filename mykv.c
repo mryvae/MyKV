@@ -35,7 +35,7 @@
 #define WRITE_INTERVAL 120
 #define READ_THESHOLD 10
 #define WRITE_THESHOLD 5
-#define MIN_USEDMEMORY ((size_t)(1024 * 1024 * 256))
+#define USEDMEMORY ((size_t)(1024 * 1024))
 
 #include "fmacros.h"
 
@@ -206,7 +206,11 @@ struct redisServer {
     pmem* pm;
     pdict* p_dict;
     carray * ca;
+    size_t carray_size;
     lru * lr;
+    size_t lru_size;
+    int writebackpersec;
+    int cleancoldpersec;
     log * lg;
     char *pool;
     char *log;
@@ -673,7 +677,7 @@ int checkPointLoop(struct aeEventLoop *eventLoop, long long id, void *clientData
     return 1000;
 }
 int writebackDirtyLoop(struct aeEventLoop *eventLoop, long long id, void *clientData){
-    writebackDirty(10);
+    writebackDirty(server.writebackpersec);
     return 1000;
 }
 int cleanColdLoop(struct aeEventLoop *eventLoop, long long id, void *clientData){
@@ -697,7 +701,7 @@ int cleanColdLoop(struct aeEventLoop *eventLoop, long long id, void *clientData)
     }else if(server.usedmemory < server.max_usedmemory/2){
         return 1000;
     }else{
-        cleanCold(10);
+        cleanCold(server.cleancoldpersec);
         return 1000;
     }
 }
@@ -866,8 +870,8 @@ static void ResetServerSaveParams() {
 }
 
 static void initServerConfig() {
-    server.pool="/mnt/pmem-mry/kv";
-    server.log="/mnt/pmem-mry/log";
+    server.pool="/mnt/pmem/kv";
+    server.log="/mnt/pmem/log";
     server.pool_size=MIN_POOL * 16;
     server.dbnum = REDIS_DEFAULT_DBNUM;
     server.port = REDIS_SERVERPORT;
@@ -878,11 +882,15 @@ static void initServerConfig() {
     server.bindaddr = NULL;
     server.glueoutputbuf = 1;
     server.daemonize = 0;
-    server.pidfile = "/var/run/redis.pid";
+    server.pidfile = "/var/run/mykv.pid";
     server.dbfilename = "dump.rdb";
     server.requirepass = NULL;
     server.shareobjects = 0;
-    server.max_usedmemory = MIN_USEDMEMORY;
+    server.max_usedmemory = USEDMEMORY * 256;
+    server.carray_size = 64 * CARRAY_MIN_SIZE;
+    server.lru_size = 128 * LRU_MIN_SIZE;
+    server.writebackpersec = 2;
+    server.cleancoldpersec = 2;
     ResetServerSaveParams();
 
     appendServerSaveParams(60*60,1);  /* save after 1 hour and 1 change */
@@ -910,8 +918,8 @@ static void initServer() {
     server.el = aeCreateEventLoop();
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
     server.sharingpool = dictCreate(&setDictType,NULL);
-    server.ca = carraynewlen(CARRAY_MIN_SIZE*128);
-    server.lr = lrunewlen(&lruDictType,LRU_MIN_SIZE*128);
+    server.ca = carraynewlen(server.carray_size);
+    server.lr = lrunewlen(&lruDictType,server.lru_size);
     server.lg = logCreate(server.log);
     server.sharingpoolsize = 1024;
     if (!server.db || !server.clients || !server.slaves || !server.monitors || !server.el || !server.objfreelist)
@@ -997,6 +1005,43 @@ static void loadServerConfig(char *filename) {
             server.port = atoi(argv[1]);
             if (server.port < 1 || server.port > 65535) {
                 err = "Invalid port"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"pmemdir") && argc == 2) {
+            server.pool = zstrdupcat(argv[1],"/kv");
+            server.log = zstrdupcat(argv[1],"/log");
+        } else if (!strcmp(argv[0],"pmempoolsize") && argc == 2) {
+            server.pool_size = MIN_POOL;
+            server.pool_size = server.pool_size * atoi(argv[1]);
+            if (atoi(argv[1]) < 1 ) {
+                err = "Invalid save parameters"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"writebackpersec") && argc == 2) {
+            server.writebackpersec = atoi(argv[1]);
+            if (server.writebackpersec < 1 ||server.writebackpersec > 100) {
+                err = "Invalid save parameters"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"cleancoldpersec") && argc == 2) {
+            server.cleancoldpersec = atoi(argv[1]);
+            if (server.cleancoldpersec < 1 ||server.cleancoldpersec > 100) {
+                err = "Invalid save parameters"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"maxusedmemory") && argc == 2) {
+            server.max_usedmemory = USEDMEMORY;
+            server.max_usedmemory = server.max_usedmemory * atoi(argv[1]);
+            if (atoi(argv[1]) < 128) {
+                err = "Invalid save parameters"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"dirtyqueuesize") && argc == 2) {
+            server.carray_size = CARRAY_MIN_SIZE;
+            server.carray_size = server.carray_size * atoi(argv[1]);
+            if (atoi(argv[1]) < 1) {
+                err = "Invalid save parameters"; goto loaderr;
+            }
+        } else if (!strcmp(argv[0],"lrusize") && argc == 2) {
+            server.lru_size = LRU_MIN_SIZE;
+            server.lru_size = server.lru_size * atoi(argv[1]);
+            if (atoi(argv[1]) < 1) {
+                err = "Invalid save parameters"; goto loaderr;
             }
         } else if (!strcmp(argv[0],"bind") && argc == 2) {
             server.bindaddr = zstrdup(argv[1]);
